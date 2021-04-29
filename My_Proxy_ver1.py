@@ -2,14 +2,18 @@ import os
 import sys
 import time
 ##################################
+import http.client
 import socket
 import ssl
 from urllib import parse
 import threading
+import gzip
+import zlib
 ##################################
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from subprocess import Popen, PIPE
+from io import StringIO
 
 BUFF = 2048
 delay = 0.03
@@ -45,12 +49,17 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     certdir = join_with_script_dir('certs/')
     timeout = 5
     lock = threading.Lock()
+    def __init__(self):
+        self.tls = threading.local()
+        self.tls.conns = {}
+
+        BaseHTTPRequestHandler.__init__(self)
 
     def do_CONNECT(self):
         self.if_have_cert()
 
     def if_have_cert(self):
-        hostname = self.path.split(":")[0] # BaseHTTPRequestHandler안 path : 요청 경로.
+        hostname = self.path.split(":")[0] # BaseHTTPRequestHandler 안 path : 요청 경로.
         cert_path = f"{self.certdir.rstrip('/')}/{hostname}.crt"
 
         with self.lock:                 # = lock.acquire() ~ lock.release()
@@ -106,10 +115,104 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         scheme, netloc, path = url.scheme, url.netloc, (url.path + '?' + url.query if url.query else url.path)
         # 프로토콜이 http or https인지 가정설정문으로 체크.
         assert scheme in ('http', 'https')
-        if netloc :
+        if netloc:
             req.headers['Host'] = netloc
+        # setattr(req, 'headers', self.filter_headers(req.headers))
+        # ----------------------------------------------------
+        try:
+            origin = (scheme, netloc)
+            if not origin in self.tls.conns:
+                if scheme == 'https':
+                    self.tls.conns[origin] = http.client.HTTPSConnection(netloc, timeout=self.timeout)
+                else:
+                    self.tls.conns[origin] = http.client.HTTPConnection(netloc, timeout=self.timeout)
+            conn = self.tls.conns[origin]
+            conn.request(self.command, path, req_body, dict(req.headers))
+            res = conn.getresponse()
+
+            version_table = {10: 'HTTP/1.0', 11: 'HTTP/1.1'}
+            setattr(res, 'headers', res.msg)
+            setattr(res, 'response_version', version_table[res.version])
+
+            # 어떤 코드인지 모르겠음
+            """
+            if not 'Content-Length' in res.headers and 'no-store' in res.headers.get('Cache-Control', ''):
+                self.response_handler(req, req_body, res, '')
+                setattr(res, 'headers', self.filter_headers(res.headers))
+                self.relay_streaming(res)
+                with self.lock:
+                    self.save_handler(req, req_body, res, '')
+                return
+            """
+            res_body = res.read()
+        except Exception as e:
+            if origin in self.tls.conns:
+                del self.tls.conns[origin]
+            self.send_error(502)
+            return
+
+        content_encoding = res.headers.get('Content-Encoding', 'identity')
+        res_body_plain = self.decode_content_body(res_body, content_encoding)
+
+        res_body_modified = self.response_handler(req, req_body, res, res_body_plain)
+        if res_body_modified is False:
+            self.send_error(403)
+            return
+        elif res_body_modified is not None:
+            res_body_plain = res_body_modified
+            res_body = self.encode_content_body(res_body_plain, content_encoding)
+            res.headers['Content-Length'] = str(len(res_body))
+
+        # setattr(res, 'headers', self.filter_headers(res.headers))
+
+        self.wfile.write(f"{self.protocol_version} {res.status} {res.reason}\r\n")
+        for line in res.headers.headers:
+            self.wfile.write(line)
+        self.end_headers()
+        self.wfile.write(res_body)
+        self.wfile.flush()
+
+        with self.lock:
+            self.save_handler(req, req_body, res,res_body_plain)
+
+    do_HEAD = do_GET
+    do_POST = do_GET
+    do_PUT = do_GET
+    do_DELETE = do_GET
+    do_OPTIONS = do_GET
+
+    def filter_headers(self, headers):
+        pass
 
 
+    def encode_content_body(self, text, encoding):
+        if encoding == 'identity':
+            data = text
+        elif encoding in ('gzip', 'x-gzip'):
+            Io = StringIO()
+            with gzip.GzipFile(fileobj=Io, mode='wb') as f:
+                f.write(text)
+        elif encoding == 'deflate':
+            data = zlib.compress(text)
+        else:
+            raise Exception(f"Unknown Content-Encoding: {encoding}")
+        return data
+
+    def decode_content_body(self, data, encoding):
+        if encoding == 'identity':
+            text = data
+        elif encoding in ('gzip', 'x-gzip'):
+            Io = StringIO(data)
+            with gzip.GzipFile(fileobj=Io) as f:
+                text = f.read()
+        elif encoding == 'deflate':
+            try:
+                text = zlib.decompress(data)
+            except zlib.error:
+                text = zlib.decompress(data, -zlib.MAX_WBITS)
+        else:
+            raise Exception(f"Unknown Content-Encoding: {encoding}")
+        return text
 
     def send_cacert(self):
         with open(self.cacert, 'rb') as f:
@@ -121,6 +224,18 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(data)
+
+    def print_info(self, req, req_body, res, res_body):
+        pass
+
+    def request_handler(self, req, req_body):
+        pass
+
+    def response_handler(self, req, req_body, res, res_body):
+        pass
+
+    def save_handler(self, req, req_body, res, res_body):
+        self.print_info(req, req_body, res, res_body)
 
 
 def lets_go(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
