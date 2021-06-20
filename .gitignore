@@ -1,7 +1,5 @@
-./certs
-
-./ca.crt
-./ca.key
-./cert.key
-
-./.idea
+cert.key
+ca.key
+ca.crt
+certs
+.idea
