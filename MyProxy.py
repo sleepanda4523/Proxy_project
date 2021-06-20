@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Mar  2 13:43:33 2021
-
 @author: msi
 """
 
@@ -111,5 +110,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt as e:
         print("Ctrl C - Stopping server")
         sys.exit(1)
-
-

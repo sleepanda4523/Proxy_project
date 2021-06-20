@@ -66,29 +66,25 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         else:
             self.connect_relay()
 
-        #self.if_have_cert()
-
     def if_have_cert(self):
         hostname = self.path.split(":")[0]  # BaseHTTPRequestHandler 안 path : 요청 경로.
-        cert_path = f"{self.certdir.rstrip('/')}\{hostname}.crt"
-        print(cert_path)
+        certpath = f"{self.certdir.rstrip('/')}\{hostname}.crt"
+        #print(cert_path)
         with self.lock:  # = lock.acquire() ~ lock.release()
-            if not os.path.isfile(cert_path):  # 만약 연결할 서버의 인증서가 없다면
+            if not os.path.isfile(certpath):  # 만약 연결할 서버의 인증서가 없다면
                 print('make cert')
-                etime = f"{time.time() * 1000}"
-                #print(etime)
-                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", f"/CN={hostname}"], stdout=PIPE)
+                epoch = "%d" % (time.time() * 1000)
+                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", "/CN=%s" % hostname], stdout=PIPE)
                 p2 = Popen(["openssl", "x509", "-req", "-days", "3650", "-CA", self.cacert, "-CAkey", self.cakey,
-                            "-set_serial", etime, "-out", cert_path], stdin=p1.stdout, stderr=PIPE)
-                outs, err = p2.communicate()
-                print(f'{err}')
+                            "-set_serial", epoch, "-out", certpath], stdin=p1.stdout, stderr=PIPE)
+                p2.communicate()
 
         #w = f"{self.protocol_version} 200 Connect OK\r\n"
         #self.wfile.write(str.encode(w))
         self.send_response(200, 'Connect OK')
         self.end_headers()
 
-        self.connection = ssl.wrap_socket(self.request, keyfile=self.certkey, certfile=cert_path, server_side=True)
+        self.connection = ssl.wrap_socket(self.request, keyfile=self.certkey, certfile=certpath, server_side=True)
         self.rfile = self.connection.makefile("rb", self.rbufsize)
         self.wfile = self.connection.makefile("wb", self.wbufsize)
 
@@ -172,7 +168,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     self.tls.conns[origin] = http.client.HTTPConnection(netloc, timeout=self.timeout)
             conn = self.tls.conns[origin]
             conn.request(self.command, path, req_body, dict(req.headers))
+            print(f'request {self.command}, {path}')
             res = conn.getresponse()
+            #print('have response')
 
             version_table = {10: 'HTTP/1.0', 11: 'HTTP/1.1'}
             setattr(res, 'headers', res.msg)
@@ -210,9 +208,10 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         # setattr(res, 'headers', self.filter_headers(res.headers))
 
-        self.wfile.write(f"{self.protocol_version} {res.status} {res.reason}\r\n")
-        for line in res.headers.headers:
-            self.wfile.write(line)
+        r = f"{self.protocol_version} {res.status} {res.reason}\r\n"
+        self.wfile.write(r.encode())
+        for line in res.headers:
+            self.wfile.write(line.encode())
         self.end_headers()
         self.wfile.write(res_body)
         self.wfile.flush()
@@ -273,7 +272,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def print_info(self, req, req_body, res, res_body):
-        print("check")
+        print("----------Request-----------")
+        print(f'{req.headers}')
+        print("---------Response-----------")
+        print(f'{res.headers}')
+        print("-----------------------------")
 
     def request_handler(self, req, req_body):
         pass
