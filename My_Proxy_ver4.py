@@ -12,7 +12,7 @@ import threading
 import gzip
 import zlib
 ##################################
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from subprocess import Popen, PIPE
 from io import StringIO
@@ -52,7 +52,7 @@ class ProxyServer(ThreadingMixIn, HTTPServer):
             return HTTPServer.handle_error(self, request, client_address)
 
 
-class ProxyHandler(SimpleHTTPRequestHandler):
+class ProxyHandler(BaseHTTPRequestHandler):
     cakey = join_with_script_dir('ca.key')
     cacert = join_with_script_dir('ca.crt')
     certkey = join_with_script_dir('cert.key')
@@ -65,7 +65,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         self.tls = threading.local()
         self.tls.conns = {}
 
-        SimpleHTTPRequestHandler.__init__(self, *args, *kwargs)
+        BaseHTTPRequestHandler.__init__(self, *args, *kwargs)
 
         self.connection = self.request
 
@@ -87,11 +87,12 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         hostname = self.path.split(":")[0]
         certpath = f'{self.certdir.rstrip("/")}/{hostname}.crt'
 
-        self.send_response(200, 'Connection Established')
-        self.end_headers()
+        self.wfile.write(("%s %d %s\r\n" % (self.protocol_version, 200, 'Connection Established')).encode())
+        self.wfile.flush()
+        #self.send_response(200, 'Connection Established')
+        #self.end_headers()
 
         with self.lock:
-            os.makedirs(self.certdir, exist_ok=True)
             if not os.path.isfile(certpath):  # 만약 연결할 서버의 인증서가 없다면
                 new_cert_req = ['openssl','req', '-new', '-key', self.certkey, '-subj', f'/CN={hostname}']
                 epoch = "%d" % (time.time() * 1000)
@@ -100,14 +101,14 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                             "-sha256", "-set_serial", epoch, "-out", certpath], stdin=p1.stdout, stderr=PIPE)
                 p2.communicate()
 
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx = ssl.SSLContext()
         ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.load_verify_locations(self.cacert)
+        ctx.load_verify_locations(cafile=self.cacert)
         ctx.load_cert_chain(certfile=certpath, keyfile=self.certkey)
         try:
-            with ctx.wrap_socket(self.connection, server_hostname=hostname) as conn:
+            print(f'{self.command} {hostname}')
+            with ctx.wrap_socket(self.connection, server_side=True) as conn:
                 self.connection = conn
-                print(f"Cipher used: {self.connection.cipher()}")
                 self.rfile = conn.makefile('rb', self.rbufsize)
                 self.wfile = conn.makefile('wb', self.wbufsize)
         except Exception as e:
@@ -118,6 +119,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             self.close_connection = False
         else:
             self.close_connection = True
+
 
     def connect_relay(self):
         address = self.path.split(':', 1)
@@ -151,6 +153,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         self.get_handle()
 
     def get_handle(self):
+        print('get')
         # request 읽어오기.
         req = self
         content_len = int(req.headers.get("Content-Length", 0))
@@ -192,7 +195,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             conn = self.tls.conns[origin]
             with self.lock:
                 self.data = req_body
-                #print(f'{self.command} {path} {req_body}')
+                print(f'{self.command} {path} {req_body}')
                 conn.request(self.command, path, self.data, dict(req.headers))
                 res = conn.getresponse()
 
