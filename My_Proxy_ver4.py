@@ -106,8 +106,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         ctx.load_verify_locations(cafile=self.cacert)
         ctx.load_cert_chain(certfile=certpath, keyfile=self.certkey)
         try:
-            print(f'{self.command} {hostname}')
             with ctx.wrap_socket(self.connection, server_side=True) as conn:
+                print(f'{self.command} {hostname}')
                 self.connection = conn
                 self.rfile = conn.makefile('rb', self.rbufsize)
                 self.wfile = conn.makefile('wb', self.wbufsize)
