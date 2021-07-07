@@ -45,10 +45,10 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             return HTTPServer.handle_error(self, request, client_address)
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
-    cakey = join_with_script_dir('ca.key')
-    cacert = join_with_script_dir('ca.crt')
-    certkey = join_with_script_dir('cert.key')
-    certdir = join_with_script_dir('certs/')
+    cakey = join_with_script_dir('../ca.key')
+    cacert = join_with_script_dir('../ca.crt')
+    certkey = join_with_script_dir('../cert.key')
+    certdir = join_with_script_dir('../certs/')
     timeout = 5
     lock = threading.Lock()
 
@@ -94,13 +94,37 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         else:
             self.close_connection = 1
 
+    def connect_relay(self):
+        address = self.path.split(':', 1)
+        address[1] = int(address[1]) or 443
+        print(f'relay :{address}')
+        try:
+            s = socket.create_connection(address, timeout=self.timeout)
+        except Exception as e:
+            self.send_error(502)
+            return
+        self.send_response(200, 'Connection Established')
+        self.end_headers()
+
+        conns = [self.connection,s]
+        self.close_connection = 0
+        while not self.close_connection:
+            rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
+            if xlist or not rlist:
+                break
+            for r in rlist:
+                other = conns[1] if r == conns[0] else conns[0]
+                data = r.recv(8192)
+                if not data:
+                    self.close_connection = 1
+                    break
+                other.sendall(data)
 
 
     def do_GET(self):
         # GET 요청 핸들러
         # 인증서 사이트 다운로드.
-        print("GET")
-        #print(self.path)
+        print(self.path)
         if self.path == "http://sleepanda.test/":
             self.send_cacert()
             return
@@ -144,7 +168,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     self.tls.conns[origin] = http.client.HTTPConnection(netloc, timeout=self.timeout)
             conn = self.tls.conns[origin]
             conn.request(self.command, path, req_body, dict(req.headers))
-            #print(f'request {self.command}, {path}')
+            print(f'request {self.command}, {path}')
             res = conn.getresponse()
             #print('have response')
 
@@ -152,6 +176,16 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             setattr(res, 'headers', res.msg)
             setattr(res, 'response_version', version_table[res.version])
 
+            # 어떤 코드인지 모르겠음
+            """
+            if not 'Content-Length' in res.headers and 'no-store' in res.headers.get('Cache-Control', ''):
+                self.response_handler(req, req_body, res, '')
+                setattr(res, 'headers', self.filter_headers(res.headers))
+                self.relay_streaming(res)
+                with self.lock:
+                    self.save_handler(req, req_body, res, '')
+                return
+            """
             res_body = res.read()
         except Exception as e:
             print('exception')
@@ -178,7 +212,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(r.encode())
         for line in res.headers:
             self.wfile.write(line.encode())
-        #self.end_headers()
+        self.end_headers()
         self.wfile.write(res_body)
         self.wfile.flush()
 
@@ -198,8 +232,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         if encoding == 'identity':
             data = text
         elif encoding in ('gzip', 'x-gzip'):
-            io = StringIO()
-            with gzip.GzipFile(fileobj=io, mode='wb') as f:
+            Io = StringIO()
+            with gzip.GzipFile(fileobj=Io, mode='wb') as f:
                 f.write(text)
         elif encoding == 'deflate':
             data = zlib.compress(text)
@@ -211,8 +245,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         if encoding == 'identity':
             text = data
         elif encoding in ('gzip', 'x-gzip'):
-            io = StringIO()
-            with gzip.GzipFile(fileobj=io) as f:
+            Io = StringIO(data)
+            with gzip.GzipFile(fileobj=Io) as f:
                 text = f.read()
         elif encoding == 'deflate':
             try:
@@ -238,14 +272,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def print_info(self, req, req_body, res, res_body):
-        """
         print("----------Request-----------")
         print(f'{req.headers}')
         print("---------Response-----------")
         print(f'{res.headers}')
         print("-----------------------------")
-        """
-
 
     def request_handler(self, req, req_body):
         pass
@@ -262,14 +293,14 @@ def make_openssl():
         make_cacert = 'openssl req -new -x509 -days 3650 -key ca.key -out ca.crt -subj "/CN=pandaproxy CA"'
         make_certkey = "openssl genrsa -out cert.key 2048".split()
         make_dir = "mkdir certs".split()
-        if not os.path.isfile(join_with_script_dir('ca.key')):
+        if not os.path.isfile(join_with_script_dir('../ca.key')):
             Popen(make_cakey, shell=PIPE, stderr=PIPE)
             time.sleep(1)
-        if not os.path.isfile(join_with_script_dir('ca.crt')):
+        if not os.path.isfile(join_with_script_dir('../ca.crt')):
             os.system(make_cacert)
-        if not os.path.isfile(join_with_script_dir('cert.key')):
+        if not os.path.isfile(join_with_script_dir('../cert.key')):
             Popen(make_certkey, shell=PIPE, stderr=PIPE)
-        if not os.path.isdir(join_with_script_dir('certs')):
+        if not os.path.isdir(join_with_script_dir('../certs')):
             Popen(make_dir, shell=PIPE, stderr=PIPE)
 
 def lets_go(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):

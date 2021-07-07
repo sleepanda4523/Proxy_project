@@ -44,12 +44,13 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         else:
             return HTTPServer.handle_error(self, request, client_address)
 
+
 class ProxyRequestHandler(BaseHTTPRequestHandler):
-    cakey = join_with_script_dir('ca.key')
-    cacert = join_with_script_dir('ca.crt')
-    certkey = join_with_script_dir('cert.key')
-    certdir = join_with_script_dir('certs/')
-    timeout = 5
+    cakey = join_with_script_dir('../ca.key')
+    cacert = join_with_script_dir('../ca.crt')
+    certkey = join_with_script_dir('../cert.key')
+    certdir = join_with_script_dir('../certs/')
+    timeout = 10
     lock = threading.Lock()
 
     def __init__(self, *args, **kwargs):
@@ -59,45 +60,19 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         BaseHTTPRequestHandler.__init__(self, *args, *kwargs)
 
     def do_CONNECT(self):
-
+        """
         if os.path.isfile(self.cakey) and os.path.isfile(self.cacert) and os.path.isfile(
                 self.certkey) and os.path.isdir(self.certdir):
             self.if_have_cert()
         else:
             self.connect_relay()
-
-    def if_have_cert(self):
-        hostname = self.path.split(":")[0]  # BaseHTTPRequestHandler 안 path : 요청 경로.
-        certpath = f"{self.certdir.rstrip('/')}\{hostname}.crt"
-        #print(cert_path)
-        with self.lock:  # = lock.acquire() ~ lock.release()
-            if not os.path.isfile(certpath):  # 만약 연결할 서버의 인증서가 없다면
-                print('make cert')
-                epoch = "%d" % (time.time() * 1000)
-                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", "/CN=%s" % hostname], stdout=PIPE)
-                p2 = Popen(["openssl", "x509", "-req", "-days", "3650", "-CA", self.cacert, "-CAkey", self.cakey,
-                            "-set_serial", epoch, "-out", certpath], stdin=p1.stdout, stderr=PIPE)
-                p2.communicate()
-
-        #w = f"{self.protocol_version} 200 Connect OK\r\n"
-        #self.wfile.write(str.encode(w))
-        self.send_response(200, 'Connect OK')
-        self.end_headers()
-
-        self.connection = ssl.wrap_socket(self.request, keyfile=self.certkey, certfile=certpath, server_side=True)
-        self.rfile = self.connection.makefile("rb", self.rbufsize)
-        self.wfile = self.connection.makefile("wb", self.wbufsize)
-
-        conntype = self.headers.get('Proxy-Connection', '')
-        if self.protocol_version == "HTTP/1.1" and conntype.lower() != 'close':
-            self.close_connection = 0
-        else:
-            self.close_connection = 1
+        """
+        self.connect_relay()
 
     def connect_relay(self):
         address = self.path.split(':', 1)
         address[1] = int(address[1]) or 443
-        print(f'relay :{address}')
+        #print(f'relay :{address}')
         try:
             s = socket.create_connection(address, timeout=self.timeout)
         except Exception as e:
@@ -106,7 +81,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200, 'Connection Established')
         self.end_headers()
 
-        conns = [self.connection,s]
+        conns = [self.connection, s]
         self.close_connection = 0
         while not self.close_connection:
             rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
@@ -120,11 +95,10 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     break
                 other.sendall(data)
 
-
     def do_GET(self):
         # GET 요청 핸들러
         # 인증서 사이트 다운로드.
-        print(self.path)
+        print(f'GET : {self.path}')
         if self.path == "http://sleepanda.test/":
             self.send_cacert()
             return
@@ -132,92 +106,49 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         req = self
         content_len = int(req.headers.get("Content-Length", 0))
         req_body = self.rfile.read(content_len) if content_len else None
-        # http/https 주소 탐색.
+        # http / https
         if req.path[0] == "/":
             if isinstance(self.connection, ssl.SSLSocket):
                 req.path = f"https://{req.headers['Host']}{req.path}"
             else:
                 req.path = f"http://{req.headers['Host']}{req.path}"
-        # request_handler함수로 request의 body 수정.
-        req_body_modified = self.request_handler(req, req_body)
-        if req_body_modified is False:
-            self.send_error(403)
-            return
-        elif req_body_modified is not None:
-            req_body = req_body_modified
-            req.headers['Content-length'] = str(len(req_body))
-        # urllib.parse.urlsplit으로 (scheme, netloc, path, query, fragment) 분석
+
         url = parse.urlparse(req.path)
-        """
-        만약 http://www.test.test/hello/world?name=panda라는 URL이 있을 때
-        scheme = 'http", netloc = "www.test.test" path = "/hello/world qurey = "?name=panda"
-        """
-        scheme, netloc, path = url.scheme, url.netloc, (url.path + '?' + url.query if url.query else url.path)
-        # 프로토콜이 http or https인지 가정설정문으로 체크.
-        assert scheme in ('http', 'https')
+        protocol, netloc, path = url.scheme, url.netloc, (url.path + '?' + url.query if url.query else url.path)
+        assert protocol in ('http', 'https')
         if netloc:
             req.headers['Host'] = netloc
-        # setattr(req, 'headers', self.filter_headers(req.headers))
-        # ----------------------------------------------------
+
         try:
-            origin = (scheme, netloc)
+            origin = (protocol, netloc)
             if not origin in self.tls.conns:
-                if scheme == 'https':
+                if protocol == 'https':
                     self.tls.conns[origin] = http.client.HTTPSConnection(netloc, timeout=self.timeout)
-                else:
+                else :
                     self.tls.conns[origin] = http.client.HTTPConnection(netloc, timeout=self.timeout)
             conn = self.tls.conns[origin]
+
+
             conn.request(self.command, path, req_body, dict(req.headers))
-            print(f'request {self.command}, {path}')
             res = conn.getresponse()
-            #print('have response')
-
-            version_table = {10: 'HTTP/1.0', 11: 'HTTP/1.1'}
-            setattr(res, 'headers', res.msg)
-            setattr(res, 'response_version', version_table[res.version])
-
-            # 어떤 코드인지 모르겠음
-            """
-            if not 'Content-Length' in res.headers and 'no-store' in res.headers.get('Cache-Control', ''):
-                self.response_handler(req, req_body, res, '')
-                setattr(res, 'headers', self.filter_headers(res.headers))
-                self.relay_streaming(res)
-                with self.lock:
-                    self.save_handler(req, req_body, res, '')
-                return
-            """
+            #print(res.read())
             res_body = res.read()
+
         except Exception as e:
-            print('exception')
             if origin in self.tls.conns:
                 del self.tls.conns[origin]
             self.send_error(502)
             return
 
-        content_encoding = res.headers.get('Content-Encoding', 'identity')
-        res_body_plain = self.decode_content_body(res_body, content_encoding)
-
-        res_body_modified = self.response_handler(req, req_body, res, res_body_plain)
-        if res_body_modified is False:
-            self.send_error(403)
-            return
-        elif res_body_modified is not None:
-            res_body_plain = res_body_modified
-            res_body = self.encode_content_body(res_body_plain, content_encoding)
-            res.headers['Content-Length'] = str(len(res_body))
-
-        # setattr(res, 'headers', self.filter_headers(res.headers))
-
-        r = f"{self.protocol_version} {res.status} {res.reason}\r\n"
-        self.wfile.write(r.encode())
-        for line in res.headers:
-            self.wfile.write(line.encode())
-        self.end_headers()
-        self.wfile.write(res_body)
-        self.wfile.flush()
-
-        with self.lock:
-            self.save_handler(req, req_body, res, res_body_plain)
+        try:
+            self.wfile.write((f'{self.protocol_version} {res.status} {res.reason}\r\b').encode())
+            for tulpe_line in res.getheaders():
+                self.wfile.write(str(tulpe_line[0]+tulpe_line[1]).encode())
+            #self.end_headers()
+            self.wfile.write(res_body)
+            self.wfile.flush()
+        except Exception as e:
+            print(f"exception2 : {origin} {e}")
 
     do_HEAD = do_GET
     do_POST = do_GET
@@ -263,9 +194,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         print('send')
         self.send_response(200, 'OK')
-        #self.wfile.write("%s %d %s\r\n" % (self.protocol_version, 200, 'OK'))
+        # self.wfile.write("%s %d %s\r\n" % (self.protocol_version, 200, 'OK'))
         self.send_header('Content-Type', 'application/x-x509-ca-cert')
-        self.send_header('Content-Disposition','attachment; filename=ca.crt')
+        self.send_header('Content-Disposition', 'attachment; filename=ca.crt')
         self.send_header('Content-Length', len(data))
         self.send_header('Connection', 'close')
         self.end_headers()
@@ -288,20 +219,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.print_info(req, req_body, res, res_body)
 
 
-def make_openssl():
-        make_cakey = "openssl genrsa -out ca.key 2048".split()
-        make_cacert = 'openssl req -new -x509 -days 3650 -key ca.key -out ca.crt -subj "/CN=pandaproxy CA"'
-        make_certkey = "openssl genrsa -out cert.key 2048".split()
-        make_dir = "mkdir certs".split()
-        if not os.path.isfile(join_with_script_dir('ca.key')):
-            Popen(make_cakey, shell=PIPE, stderr=PIPE)
-            time.sleep(1)
-        if not os.path.isfile(join_with_script_dir('ca.crt')):
-            os.system(make_cacert)
-        if not os.path.isfile(join_with_script_dir('cert.key')):
-            Popen(make_certkey, shell=PIPE, stderr=PIPE)
-        if not os.path.isdir(join_with_script_dir('certs')):
-            Popen(make_dir, shell=PIPE, stderr=PIPE)
 
 def lets_go(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
     if sys.argv[1:]:
@@ -318,5 +235,4 @@ def lets_go(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, p
 
 
 if __name__ == '__main__':
-    make_openssl()
     lets_go()
