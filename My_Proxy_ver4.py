@@ -73,12 +73,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return False
 
     def do_CONNECT(self):
-        self.wfile.write(("%s %d %s\r\n" % (self.protocol_version, 200, 'Connection Established')).encode())
-        self.wfile.flush()
-        # self.send_response(200, 'Connection Established')
-        # self.end_headers()
-
-        self.connection = self.request
         hostname = self.path.split(":")[0]
         certpath = f"{self.certdir.rstrip('/')}\{hostname}.crt"
 
@@ -91,26 +85,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             "-set_serial", epoch, "-out", certpath], stdin=p1.stdout, stderr=PIPE)
                 p2.communicate()
 
-        with ssl.wrap_socket(self.connection,
-                             keyfile=self.certkey,
-                             certfile=certpath,
-                             server_side=True,
-                             do_handshake_on_connect=False) as conn:
-            self.connection = conn
-            self.rfile = conn.makefile('rb', self.rbufsize)
-            self.wfile = conn.makefile('wb', self.wbufsize)
+        # self.wfile.write(("%s %d %s\r\n" % (self.protocol_version, 200, 'Connection Established')).encode())
+        # self.wfile.flush()
+        self.send_response(200, 'Connection Established')
+        self.end_headers()
 
-        while True:
-            try:
-                self.connection.do_handshake()
-                break
-            except Exception as e:
-                print(f'CONNECT except : {e}')
-                return
-        print('debug')
+        try:
+
+            self.connection = ssl.wrap_socket(self.connection,
+                                              keyfile=self.certkey,
+                                              certfile=certpath,
+                                              server_side=True)
+            self.rfile = self.connection.makefile("rb", self.rbufsize)
+            self.wfile = self.connection.makefile("wb", self.wbufsize)
+        except Exception as e:
+            print(f'CONNECT Except: {e}')
 
         conntype = self.headers.get('Proxy-Connection', '')
-        if self.protocol_version == 'HTTP/1.1' and conntype.lower() != 'close':
+        #print(self.protocol_version)
+        if (self.protocol_version == "HTTP/1.0" or self.protocol_version == "HTTP/1.1")  and conntype.lower() != 'close':
             self.close_connection = False
         else:
             self.close_connection = True
@@ -209,6 +202,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def request_handler(self, req, req_body):
+        pass
+    def response_handler(self, req, req_body, res, res_body):
         pass
     def save_handler(self, req, req_body, res, res_body):
         pass
