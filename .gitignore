@@ -4,3 +4,4 @@ ca.crt
 certs
 .idea
 logo.png
+__pycache__
